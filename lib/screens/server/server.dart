@@ -1,109 +1,166 @@
+// lib/screens/server/server.dart
+// ignore_for_file: use_build_context_synchronously
+
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:server_file/file_server.dart';
 
 class ServerPage extends StatefulWidget {
   const ServerPage({super.key});
+
   @override
   State<ServerPage> createState() => _ServerPageState();
 }
 
 class _ServerPageState extends State<ServerPage> {
-  final FileServer _server = FileServer();
-  String? _dir;
+  FileServer? _server;
+  String? _directory;
   final int _port = 8080;
 
+  bool get _isRunning => _server?.isRunning ?? false;
+
   Future<void> _selectFolder() async {
-    _dir = await FilePicker.platform.getDirectoryPath();
-    setState(() {});
+    try {
+      final selected = await FilePicker.platform.getDirectoryPath();
+      if (selected != null) {
+        setState(() => _directory = selected);
+      }
+    } catch (e) {
+      if (kDebugMode) print('Error selecting folder: $e');
+      await showDialog(
+        context: context,
+        builder: (_) => ContentDialog(
+          title: const Text('Erro'),
+          content: const Text(
+            'Não foi possível abrir o seletor de pastas. '
+            'Verifique se o Zenity ou kdialog está instalado.',
+          ),
+          actions: [
+            Button(
+              child: const Text('OK'),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
-  Future<void> _start() async {
-    if (_dir == null) return;
-    await _server.start(_dir!, _port);
-    setState(() {});
+  Future<void> _startServer() async {
+    if (_directory == null) return;
+    _server = FileServer(directory: _directory!, port: _port);
+    try {
+      await _server!.start();
+      setState(() {});
+    } catch (e) {
+      if (kDebugMode) print('Server start error: $e');
+      await showDialog(
+        context: context,
+        builder: (_) => ContentDialog(
+          title: const Text('Erro ao Iniciar'),
+          content: Text('Falha ao iniciar servidor: $e'),
+          actions: [
+            Button(
+              child: const Text('OK'),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
-  Future<void> _stop() async {
-    await _server.stop();
-    setState(() {});
+  Future<void> _stopServer() async {
+    if (_server == null) return;
+    await _server!.stop();
+    setState(() => _server = null);
   }
 
-  Future<String?> _localIP() async {
+  Future<String?> _getLocalIP() async {
     try {
       final interfaces = await NetworkInterface.list(
         includeLoopback: false,
         type: InternetAddressType.IPv4,
       );
-
-      for (var interface in interfaces) {
-        for (var address in interface.addresses) {
-          if (!address.isLoopback) {
-            return address.address;
-          }
+      for (var intf in interfaces) {
+        for (var addr in intf.addresses) {
+          if (!addr.isLoopback) return addr.address;
         }
       }
     } catch (e) {
-      if (kDebugMode) {
-        print('Erro ao obter o endereço IP: $e');
-      }
+      if (kDebugMode) print('IP fetch error: $e');
     }
     return null;
   }
 
   @override
-  Widget build(BuildContext c) {
-    return ScaffoldPage(
+  Widget build(BuildContext context) {
+    return ScaffoldPage.scrollable(
       header: const PageHeader(title: Text('Servidor de Arquivos')),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Button(
-            onPressed: _selectFolder,
-            child: const Text('Selecionar Pasta'),
-          ),
-          if (_dir != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              child: Text('Pasta: $_dir'),
-            ),
-          Wrap(
-            spacing: 10,
+      children: [
+        const SizedBox(height: 16),
+        InfoLabel(
+          label: 'Pasta Compartilhada',
+          child: Row(
             children: [
-              Button(
-                onPressed: (_dir != null && !_server.isRunning) ? _start : null,
-                child: const Text('Iniciar Servidor'),
+              Expanded(
+                child: TextFormBox(
+                  placeholder: 'Nenhuma pasta selecionada',
+                  readOnly: true,
+                  controller: TextEditingController(text: _directory ?? ''),
+                ),
               ),
-              Button(
-                onPressed: _server.isRunning ? _stop : null,
-                child: const Text('Parar Servidor'),
-              ),
+              const SizedBox(width: 8),
+              Button(onPressed: _selectFolder, child: const Text('Selecionar')),
             ],
           ),
-          if (_server.isRunning)
-            Padding(
-              padding: const EdgeInsets.only(top: 20),
-              child: FutureBuilder<String?>(
-                future: _localIP(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const CircularProgressIndicator();
-                  } else if (snapshot.hasError) {
-                    return Text('Erro: ${snapshot.error}');
-                  } else if (snapshot.hasData) {
-                    return Text('Servidor em: http://${snapshot.data}:$_port');
-                  } else {
-                    return const Text('Não foi possível obter o IP');
-                  }
-                },
-              ),
+        ),
+        const SizedBox(height: 24),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            FilledButton(
+              onPressed: (_directory != null && !_isRunning)
+                  ? _startServer
+                  : null,
+              child: const Text('Iniciar Servidor'),
             ),
-        ],
-      ),
+            const SizedBox(width: 12),
+            FilledButton(
+              onPressed: _isRunning ? _stopServer : null,
+              style: ButtonStyle(
+                // ignore: deprecated_member_use
+                backgroundColor: ButtonState.all(Colors.red.dark),
+              ),
+              child: const Text('Parar Servidor'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 24),
+        if (_isRunning)
+          FutureBuilder<String?>(
+            future: _getLocalIP(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: ProgressRing());
+              } else if (snapshot.hasError) {
+                return Text('Erro ao obter IP: ${snapshot.error}');
+              } else if (snapshot.hasData) {
+                return InfoLabel(
+                  label: 'Servidor Ativo',
+                  child: Text(
+                    'http://${snapshot.data}:$_port',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                );
+              }
+              return const SizedBox.shrink();
+            },
+          ),
+      ],
     );
   }
 }
